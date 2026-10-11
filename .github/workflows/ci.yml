@@ -1,0 +1,97 @@
+name: ci-cd
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  build:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+
+  integration:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: integration
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Déployer et vérifier
+        run: |
+          docker run -d --name app -p 3000:3000 \
+            -e APP_ENV=integration -e APP_VERSION=${{ github.sha }} \
+            "$IMAGE:${{ github.sha }}"
+          sleep 3
+          curl -sf http://localhost:3000/health
+          curl -sf http://localhost:3000/info | tee /dev/stderr | grep -q '"env":"integration"'
+
+  preprod:
+    needs: integration
+    runs-on: ubuntu-latest
+    environment: preprod
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Déployer et vérifier
+        run: |
+          docker run -d --name app -p 3000:3000 \
+            -e APP_ENV=preprod -e APP_VERSION=${{ github.sha }} \
+            "$IMAGE:${{ github.sha }}"
+          sleep 3
+          curl -sf http://localhost:3000/health
+          curl -sf http://localhost:3000/info | tee /dev/stderr | grep -q '"env":"preprod"'
+
+  production:
+    needs: preprod
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Déployer et vérifier
+        run: |
+          docker run -d --name app -p 3000:3000 \
+            -e APP_ENV=production -e APP_VERSION=${{ github.sha }} \
+            "$IMAGE:${{ github.sha }}"
+          sleep 3
+          curl -sf http://localhost:3000/health
+          curl -sf http://localhost:3000/info | tee /dev/stderr | grep -q '"env":"production"'
